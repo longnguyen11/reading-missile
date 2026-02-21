@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -12,7 +12,7 @@
 
   <!-- Collapsed control: ONLY this stays on screen -->
   <button id="cogBtn" aria-label="Open settings">Settings</button>
-
+  <div id="livesBadge" aria-live="polite">Lives: <span id="liveLives">5</span></div>
   <!-- Floating panel (opens on start, then collapses to cog) -->
   <div id="panelOverlay">
     <div id="panel">
@@ -33,6 +33,7 @@
         <div class="stat">Misses: <b id="misses">0</b></div>
         <div class="stat">Streak: <b id="streak">0</b></div>
         <div class="stat">Level: <b id="level">1</b></div>
+        <div class="stat">Lives: <b id="lives">5</b></div>
         <div class="stat">Heard: <b id="heard">...</b></div>
       </div>
 
@@ -95,8 +96,12 @@
       </div>
     </div>
   </div>
+
+  <div id="liveHeardBar" aria-live="polite">Heard: <span id="liveHeard">...</span></div>
 </div>
 
 <script src="main.js"></script>
 </body>
 </html>
+
+

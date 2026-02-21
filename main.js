@@ -1,4 +1,4 @@
-﻿
+
 (() => {
   // ===========================
   // FIXED VIRTUAL WIDTH + consistent experience:
@@ -51,7 +51,10 @@
   const $misses = document.getElementById("misses");
   const $streak = document.getElementById("streak");
   const $level = document.getElementById("level");
+  const $lives = document.getElementById("lives");
   const $heard = document.getElementById("heard");
+  const $liveHeard = document.getElementById("liveHeard");
+  const $liveLives = document.getElementById("liveLives");
   const $matchText = document.getElementById("matchText");
   const $matchBadge = document.getElementById("matchBadge");
 
@@ -104,6 +107,7 @@
     hits: 0,
     misses: 0,
     streak: 0,
+    lives: 5,
 
     missiles: [],
     bullets: [],
@@ -146,6 +150,8 @@
     $hits.textContent = String(state.hits);
     $misses.textContent = String(state.misses);
     $streak.textContent = String(state.streak);
+    $lives.textContent = String(state.lives);
+    if ($liveLives) $liveLives.textContent = String(state.lives);
     const steps = Math.floor(state.hits / 10);
     $level.textContent = String(1 + steps);
   }
@@ -153,6 +159,12 @@
     $micPill.textContent = "Mic: " + (listening ? "on" : "off");
     $micPill.style.color = listening ? "rgba(74,222,128,0.95)" : "rgba(255,255,255,0.70)";
     btnMic.textContent = listening ? "Disconnect" : "Connect Mic";
+  }
+
+  function setHeardText(transcript) {
+    const heard = normalizeEnglish(transcript) || "...";
+    $heard.textContent = heard;
+    $liveHeard.textContent = heard;
   }
 
   // ---------- Panel + pause behavior ----------
@@ -280,6 +292,26 @@
   function normalizeEnglish(s) {
     return (s || "").toLowerCase().trim().replace(/[^a-z0-9'\s-]+/g, "").replace(/\s+/g, " ");
   }
+  const FILLER_TOKENS = new Set(["the","a","an","um","uh","like","i","it","is","its","this","that","my","your","you","me"]);
+
+  function recentWordCandidates(transcript, maxWords = 2) {
+    const s = normalizeEnglish(transcript);
+    if (!s) return [];
+
+    const tokens = s.split(" ").filter(Boolean).filter(t => !FILLER_TOKENS.has(t));
+    const out = [];
+    const seen = new Set();
+
+    for (let i = tokens.length - 1; i >= 0 && out.length < maxWords; i--) {
+      const t = tokens[i];
+      if (seen.has(t)) continue;
+      seen.add(t);
+      out.push(t);
+    }
+
+    return out;
+  }
+
   function phoneticish(w) {
     w = normalizeEnglish(w).replace(/'/g, "");
     w = w
@@ -313,16 +345,16 @@
     const s = normalizeEnglish(transcript);
     if (!s) return [];
     const tokens = s.split(" ").filter(Boolean);
-    const fillers = new Set(["the","a","an","um","uh","like","i","it","is","its","this","that","my","your","you","me"]);
     const cands = new Set();
-    for (const t of tokens) if (!fillers.has(t)) cands.add(t);
+    for (const t of tokens) if (!FILLER_TOKENS.has(t)) cands.add(t);
     for (let i = 0; i < tokens.length - 1; i++) {
       const a = tokens[i], b = tokens[i + 1];
-      if (!fillers.has(a) && !fillers.has(b)) cands.add(a + b);
+      if (!FILLER_TOKENS.has(a) && !FILLER_TOKENS.has(b)) cands.add(a + b);
     }
     cands.add(s);
     return Array.from(cands);
   }
+
   function isMatchEnglish(transcript, targetWord, mode) {
     const word = normalizeEnglish(targetWord);
     const cands = transcriptCandidates(transcript);
@@ -344,6 +376,32 @@
         const dPh = levenshtein(phoneticish(tn), wPh);
         const allowPh = word.length <= 3 ? 1 : word.length <= 6 ? 2 : 3;
         if (dPh <= allowPh) return true;
+      }
+    }
+    return false;
+  }
+
+  function isLikelyPartialMatchEnglish(transcript, targetWord, mode) {
+    const word = normalizeEnglish(targetWord);
+    const cands = transcriptCandidates(transcript);
+    if (!word || cands.length === 0 || word.length < 4) return false;
+
+    const minPrefix = Math.max(3, word.length - 1);
+    const wordPh = phoneticish(word);
+
+    for (const t of cands) {
+      const tn = normalizeEnglish(t);
+      if (!tn) continue;
+      if (tn.length < minPrefix || tn.length >= word.length) continue;
+
+      if (word.startsWith(tn)) return true;
+
+      if (mode === "fuzzy") {
+        const tp = phoneticish(tn);
+        if (!tp) continue;
+        if (tp.length >= Math.max(2, wordPh.length - 1) && tp.length < wordPh.length && wordPh.startsWith(tp)) {
+          return true;
+        }
       }
     }
     return false;
@@ -745,12 +803,16 @@
           if (!m.claimed) {
             m.remove = true;
             state.misses += 1;
+            state.lives = Math.max(0, state.lives - 1);
             state.streak = 0;
             state.score = Math.max(0, state.score - 3);
-            setBadge("bad", `Missed ${m.word}`);
+            setBadge("bad", `Missed ${m.word} - ${state.lives} lives left`);
             spawnExplosion(m.x, state.h - 64, 8);
             spawnImpactParticles(m.x, state.h - 64);
             updateHUD();
+            if (state.lives === 0) {
+              pauseGame("Game over - no lives left");
+            }
           } else {
             m.remove = true;
             spawnExplosion(m.x, state.h - 64, 8);
@@ -841,25 +903,44 @@
     requestAnimationFrame(step);
   }
 
-    // ---------- Mic / Speech ----------
+            // ---------- Mic / Speech ----------
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const speechOk = !!SpeechRecognition;
+  const cap = window.Capacitor || null;
+  const capPlatform = cap && typeof cap.getPlatform === "function" ? cap.getPlatform() : null;
+  const nativeVosk = capPlatform === "android" && cap && cap.Plugins && cap.Plugins.VoskSpeech
+    ? cap.Plugins.VoskSpeech
+    : null;
+  const nativeDefaultSpeech = capPlatform === "android" && cap
+    ? ((cap.Plugins && cap.Plugins.SpeechRecognition) || (typeof cap.registerPlugin === "function" ? cap.registerPlugin("SpeechRecognition") : null))
+    : null;
+  const nativeSpeech = nativeVosk || nativeDefaultSpeech;
+  const usingVosk = !!nativeVosk;
+  const speechOk = !!(nativeSpeech || SpeechRecognition);
+
   let rec = null;
   let listening = false;
   let keepListening = false;
   let reconnectTimer = null;
-  let reconnectAttempts = 0;
+  let reconnectFailures = 0;
   let manualStop = false;
-  const MAX_RECONNECT_ATTEMPTS = 8;
+  let nativePartialListenerReady = false;
+  let nativeStateListenerReady = false;
+  let nativeStartPending = false;
+
+  const MAX_RECONNECT_FAILURES = 60;
   const TRANSIENT_SPEECH_ERRORS = new Set(["aborted", "network", "no-speech"]);
 
   if (!speechOk) {
     speechSupport.textContent = "Not supported";
     speechSupport.style.color = "rgba(251,113,133,0.95)";
     setBadge("bad", "Speech recognition not available");
-  } else {
-    speechSupport.textContent = "Supported";
+  } else if (nativeSpeech) {
+    speechSupport.textContent = usingVosk ? "Supported (Android Vosk)" : "Supported (Android native)";
     speechSupport.style.color = "rgba(74,222,128,0.95)";
+    setBadge("warn", "Connect mic to start");
+  } else {
+    speechSupport.textContent = "Supported (browser)";
+    speechSupport.style.color = "rgba(251,191,36,0.95)";
     setBadge("warn", "Connect mic to start");
   }
 
@@ -869,22 +950,38 @@
     reconnectTimer = null;
   }
 
-  function cleanupRecognizer() {
+  function cleanupBrowserRecognizer() {
     rec = null;
     listening = false;
     setMicUI(false);
   }
 
-  function scheduleReconnect() {
+  function applyMicDisconnectedUI(reason) {
+    state.micConnected = false;
+    listening = false;
+    setMicUI(false);
+    pauseGame(reason || "Mic disconnected");
+  }
+
+  function scheduleReconnect(isFailure = false) {
     if (!keepListening) return;
-    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      pauseForMic("Mic disconnected");
-      return;
+
+    if (isFailure) {
+      reconnectFailures += 1;
+      if (reconnectFailures >= MAX_RECONNECT_FAILURES) {
+        pauseForMic("Mic disconnected");
+        return;
+      }
+    } else {
+      reconnectFailures = 0;
     }
+
     clearReconnectTimer();
-    const delayMs = Math.min(2400, 200 * Math.pow(1.6, reconnectAttempts));
-    reconnectAttempts += 1;
-    setBadge("warn", "Mic reconnecting...");
+    const delayMs = isFailure
+      ? Math.min(2200, 180 * Math.pow(1.5, reconnectFailures - 1))
+      : 30;
+    if (isFailure) setBadge("warn", "Mic reconnecting...");
+
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       startListening(true);
@@ -894,28 +991,225 @@
   function pauseForMic(reason) {
     keepListening = false;
     manualStop = false;
-    reconnectAttempts = 0;
+    reconnectFailures = 0;
     clearReconnectTimer();
-    state.micConnected = false;
-    listening = false;
-    setMicUI(false);
-    pauseGame(reason || "Mic disconnected");
+    applyMicDisconnectedUI(reason || "Mic disconnected");
   }
 
   function unpauseForMic() {
-    reconnectAttempts = 0;
+    reconnectFailures = 0;
     state.micConnected = true;
     listening = true;
     setMicUI(true);
     resumeGame();
   }
 
+  function handleRecognizedSpeech(transcript, isFinal, showMissFeedback = isFinal) {
+    if (!state.micConnected) return false;
+
+    const spoken = normalizeEnglish(transcript);
+    if (!spoken) return false;
+
+    reconnectFailures = 0;
+
+    const nowMs = performance.now();
+    if (nowMs - state.lastLockAt < state.lockCooldownMs) return false;
+
+    const candidates = state.missiles.filter(m => !m.remove && !m.claimed);
+    if (!candidates.length) return false;
+
+    const target = state.targetId
+      ? state.missiles.find(m => m.id === state.targetId && !m.remove && !m.claimed)
+      : null;
+
+    const allowPartial = !isFinal;
+
+    let matched = null;
+    if (target) {
+      const targetMatch = isMatchEnglish(spoken, target.word, state.matchMode)
+        || (allowPartial && isLikelyPartialMatchEnglish(spoken, target.word, state.matchMode));
+      if (targetMatch) matched = target;
+    }
+
+    if (!matched) {
+      for (const m of candidates.sort((a, b) => b.y - a.y)) {
+        const matchedNow = isMatchEnglish(spoken, m.word, state.matchMode)
+          || (allowPartial && isLikelyPartialMatchEnglish(spoken, m.word, state.matchMode));
+        if (matchedNow) {
+          matched = m;
+          break;
+        }
+      }
+    }
+
+    if (matched) {
+      state.lastLockAt = nowMs;
+      matched.claimed = true;
+      shootPrimaryAndMaybeExtras(matched, nowMs);
+
+      state.hits += 1;
+      state.streak += 1;
+      state.score += 10 + Math.min(20, state.streak);
+
+      if (state.streak > 0 && state.streak % 7 === 0) {
+        spawnGift(nowMs);
+        setBadge("good", "Gift dropped!");
+      } else {
+        setBadge("good", `Locked ${matched.word}`);
+      }
+
+      state.targetId = null;
+      updateHUD();
+      return true;
+    }
+
+    if (showMissFeedback && isFinal) setBadge("warn", "Almost - try again!");
+    return false;
+  }
+
+  function handleRecognizedAlternatives(alternatives, isFinal) {
+    const options = (Array.isArray(alternatives) ? alternatives : [alternatives])
+      .map(t => normalizeEnglish(t))
+      .filter(Boolean);
+
+    if (!options.length) {
+      setHeardText("");
+      return false;
+    }
+
+    const stream = [];
+    for (const option of options.slice(0, 4)) {
+      for (const w of recentWordCandidates(option, 2)) stream.push(w);
+    }
+
+    const words = [];
+    const seen = new Set();
+    for (const w of stream) {
+      if (seen.has(w)) continue;
+      seen.add(w);
+      words.push(w);
+      if (words.length >= 6) break;
+    }
+
+    const hearing = words[0] || options[0];
+    setHeardText(hearing);
+
+    for (const word of words) {
+      if (handleRecognizedSpeech(word, isFinal, false)) return true;
+    }
+
+    if (isFinal) setBadge("warn", "Almost - try again!");
+    return false;
+  }
+
+  async function ensureNativePermission() {
+    if (!nativeSpeech) return false;
+    const status = await nativeSpeech.checkPermissions();
+    if (status.speechRecognition === "granted") return true;
+    const requested = await nativeSpeech.requestPermissions();
+    return requested.speechRecognition === "granted";
+  }
+
+  async function ensureNativeListeners() {
+    if (nativeSpeech && !nativePartialListenerReady) {
+      await nativeSpeech.addListener("partialResults", (data) => {
+        const matches = data && Array.isArray(data.matches) ? data.matches : [];
+        handleRecognizedAlternatives(matches, false);
+      });
+      nativePartialListenerReady = true;
+    }
+
+    if (nativeSpeech && !nativeStateListenerReady) {
+      await nativeSpeech.addListener("listeningState", (data) => {
+        const status = data && data.status ? data.status : "";
+
+        if (status === "started") {
+          unpauseForMic();
+          return;
+        }
+
+        if (status === "stopped") {
+          listening = false;
+          setMicUI(keepListening);
+          if (keepListening && !manualStop) {
+            scheduleReconnect(false);
+          }
+        }
+      });
+      nativeStateListenerReady = true;
+    }
+  }
+
   function startListening(isReconnect = false) {
-    if (!speechOk || listening || rec) return;
+    if (nativeSpeech) {
+      void startNativeListening(isReconnect);
+      return;
+    }
+    startBrowserListening(isReconnect);
+  }
+
+  async function startNativeListening(isReconnect = false) {
+    if (!nativeSpeech || nativeStartPending || listening) return;
+
     if (!isReconnect) {
       keepListening = true;
       manualStop = false;
-      reconnectAttempts = 0;
+      reconnectFailures = 0;
+      clearReconnectTimer();
+    }
+
+    nativeStartPending = true;
+
+    try {
+      const available = await nativeSpeech.available();
+      if (!available.available) {
+        pauseForMic("Speech recognition not available");
+        return;
+      }
+
+      const hasPermission = await ensureNativePermission();
+      if (!hasPermission) {
+        pauseForMic("Mic permission denied");
+        return;
+      }
+
+      await ensureNativeListeners();
+      if (!usingVosk) unpauseForMic();
+
+      const startOptions = {
+        language: "en-US",
+        maxResults: 5,
+        partialResults: true,
+        popup: false
+      };
+      if (usingVosk) startOptions.words = state.words;
+
+      // Most native plugins return quickly when partialResults=true.
+      await nativeSpeech.start(startOptions);
+      if (usingVosk) unpauseForMic();
+    } catch (err) {
+      listening = false;
+      if (keepListening && !manualStop) {
+        state.micConnected = true;
+        setMicUI(true);
+        scheduleReconnect(true);
+        return;
+      }
+
+      const msg = err && err.message ? String(err.message) : "Could not start mic";
+      pauseForMic(msg);
+    } finally {
+      nativeStartPending = false;
+    }
+  }
+
+  function startBrowserListening(isReconnect = false) {
+    if (!SpeechRecognition || listening || rec) return;
+
+    if (!isReconnect) {
+      keepListening = true;
+      manualStop = false;
+      reconnectFailures = 0;
       clearReconnectTimer();
     }
 
@@ -927,70 +1221,27 @@
     rec.onresult = (event) => {
       if (!state.micConnected) return;
 
-      let transcript = "";
+      const alternatives = [];
       let isFinal = false;
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const res = event.results[i];
-        transcript = res[0].transcript;
         isFinal = res.isFinal;
+        const altCount = Math.min(4, res.length || 1);
+        for (let j = 0; j < altCount; j++) {
+          const alt = res[j] && res[j].transcript ? res[j].transcript : "";
+          if (alt) alternatives.push(alt);
+        }
         break;
       }
-      $heard.textContent = normalizeEnglish(transcript) || "...";
 
-      // fire only on final
-      if (!isFinal) return;
-      reconnectAttempts = 0;
-
-      const nowMs = performance.now();
-      if (nowMs - state.lastLockAt < state.lockCooldownMs) return;
-
-      const candidates = state.missiles.filter(m => !m.remove && !m.claimed);
-      if (!candidates.length) return;
-
-      // if a target was previously chosen, prefer it
-      const target = state.targetId ? state.missiles.find(m => m.id === state.targetId && !m.remove && !m.claimed) : null;
-
-      let matched = null;
-      if (target && isMatchEnglish(transcript, target.word, state.matchMode)) {
-        matched = target;
-      } else {
-        // otherwise match most urgent (lowest on screen)
-        for (const m of candidates.sort((a,b) => b.y - a.y)) {
-          if (isMatchEnglish(transcript, m.word, state.matchMode)) { matched = m; break; }
-        }
-      }
-
-      if (matched) {
-        state.lastLockAt = nowMs;
-        matched.claimed = true;
-
-        // fire bullets (triple powerup supported)
-        shootPrimaryAndMaybeExtras(matched, nowMs);
-
-        state.hits += 1;
-        state.streak += 1;
-        state.score += 10 + Math.min(20, state.streak);
-
-        // gift every 7 streak
-        if (state.streak > 0 && state.streak % 7 === 0) {
-          spawnGift(nowMs);
-          setBadge("good", "Gift dropped!");
-        } else {
-          setBadge("good", `Locked ${matched.word}`);
-        }
-
-        state.targetId = null;
-        updateHUD();
-      } else {
-        setBadge("warn", "Almost - try again!");
-      }
+      handleRecognizedAlternatives(alternatives, isFinal);
     };
 
     rec.onerror = (e) => {
       const err = e && e.error ? e.error : "unknown";
-      cleanupRecognizer();
+      cleanupBrowserRecognizer();
       if (keepListening && TRANSIENT_SPEECH_ERRORS.has(err)) {
-        scheduleReconnect();
+        scheduleReconnect(true);
         return;
       }
       pauseForMic(`Mic error: ${err}`);
@@ -999,10 +1250,10 @@
     rec.onend = () => {
       const endedByUser = manualStop;
       manualStop = false;
-      cleanupRecognizer();
+      cleanupBrowserRecognizer();
       if (endedByUser) return;
       if (keepListening) {
-        scheduleReconnect();
+        scheduleReconnect(false);
         return;
       }
       pauseForMic("Mic disconnected");
@@ -1011,10 +1262,10 @@
     try {
       rec.start();
       unpauseForMic();
-    } catch (e) {
-      cleanupRecognizer();
+    } catch (_) {
+      cleanupBrowserRecognizer();
       if (keepListening) {
-        scheduleReconnect();
+        scheduleReconnect(true);
         return;
       }
       pauseForMic("Could not start mic");
@@ -1024,31 +1275,40 @@
   function stopListening() {
     keepListening = false;
     manualStop = true;
-    reconnectAttempts = 0;
+    reconnectFailures = 0;
     clearReconnectTimer();
-    try { rec && rec.stop(); } catch(_) {}
-    cleanupRecognizer();
-    pauseForMic("Mic disconnected");
+
+    if (nativeSpeech) {
+      listening = false;
+      setMicUI(false);
+      nativeSpeech.stop().catch(() => {});
+    } else {
+      try { rec && rec.stop(); } catch (_) {}
+      cleanupBrowserRecognizer();
+    }
+
+    applyMicDisconnectedUI("Mic disconnected");
   }
 
   btnMic.addEventListener("click", () => {
     if (!speechOk) return;
-    if (listening || keepListening) stopListening();
+    if (listening || keepListening || nativeStartPending) stopListening();
     else startListening();
   });
-btnPause.addEventListener("click", () => {
+
+  btnPause.addEventListener("click", () => {
     if (isFrozen(performance.now())) return;
     if (state.paused) resumeGame();
     else pauseGame();
   });
 
   btnReset.addEventListener("click", () => {
-    state.score = 0; state.hits = 0; state.misses = 0; state.streak = 0;
+    state.score = 0; state.hits = 0; state.misses = 0; state.streak = 0; state.lives = 5;
     state.missiles = []; state.bullets = []; state.particles = []; state.explosions = []; state.gifts = [];
     state.targetId = null;
     state.lastLockAt = 0;
     state.freezeUntil = 0; state.slowUntil = 0; state.tripleUntil = 0;
-    $heard.textContent = "...";
+    setHeardText("");
     updateHUD();
     setBadge("warn", state.micConnected ? "Listening... say a word" : "Connect mic to start");
   });
@@ -1056,10 +1316,33 @@ btnPause.addEventListener("click", () => {
   // ---------- Final init ----------
   updateHUD();
   setMicUI(false);
+  setHeardText("");
   pauseGame("Connect mic to start");
 
   requestAnimationFrame(step);
 })();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
