@@ -118,7 +118,7 @@
     lastLockAt: 0,
     lockCooldownMs: 10,
 
-    words: ["cat","dog","apple","banana"],
+    words: ["read","seed","sad","seat", "mad","rat","at","sat", "ram","am","see","eat"],
     matchMode: "fuzzy",
     spawnMode: "low",
     speedMode: "chill",
