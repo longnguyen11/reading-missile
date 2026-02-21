@@ -137,7 +137,10 @@
 
     cannonAngle: -Math.PI/2,
     cannonAngleTarget: -Math.PI/2,
+    recentPrimaryFires: [],
   };
+
+  const MAX_PRIMARY_SHOTS_PER_SECOND = 2;
 
   // ---------- UI helpers ----------
   function setBadge(kind, text) {
@@ -502,22 +505,46 @@
     return { x:startX, y:startY, vx, vy, t:0, targetId: target.id, remove:false };
   }
 
+  function pruneRecentPrimaryFires(nowMs) {
+    state.recentPrimaryFires = state.recentPrimaryFires.filter(t => (nowMs - t) < 1000);
+  }
+
+  function canFirePrimaryShot(nowMs) {
+    pruneRecentPrimaryFires(nowMs);
+    return state.recentPrimaryFires.length < MAX_PRIMARY_SHOTS_PER_SECOND;
+  }
+
+  function recordPrimaryShot(nowMs) {
+    state.recentPrimaryFires.push(nowMs);
+  }
+
+  function pushBullet(startX, startY, target, speed) {
+    const bullet = makeBullet(startX, startY, target, speed);
+    state.bullets.push(bullet);
+    return bullet;
+  }
+
   function shootPrimaryAndMaybeExtras(primaryTarget, nowMs) {
     const startX = state.w * 0.5;
     const startY = state.h - 46;
     const speed = 620;
 
-    const b0 = makeBullet(startX, startY, primaryTarget, speed);
-    state.cannonAngleTarget = Math.atan2(b0.vy, b0.vx);
-    state.bullets.push(b0);
+    if (!canFirePrimaryShot(nowMs)) return 0;
+    recordPrimaryShot(nowMs);
 
-    if (!tripleActive(nowMs)) return;
+    const b0 = pushBullet(startX, startY, primaryTarget, speed);
+
+    state.cannonAngleTarget = Math.atan2(b0.vy, b0.vx);
+    let firedCount = 1;
+
+    if (!tripleActive(nowMs)) return firedCount;
     const others = state.missiles
       .filter(m => !m.remove && m.id !== primaryTarget.id)
       .sort((a,b) => Math.hypot(a.x-startX,a.y-startY) - Math.hypot(b.x-startX,b.y-startY));
 
-    if (others[0]) state.bullets.push(makeBullet(startX, startY, others[0], speed));
-    if (others[1]) state.bullets.push(makeBullet(startX, startY, others[1], speed));
+    if (others[0]) { pushBullet(startX, startY, others[0], speed); firedCount += 1; }
+    if (others[1]) { pushBullet(startX, startY, others[1], speed); firedCount += 1; }
+    return firedCount;
   }
 
   // ---------- Input (fixed world) ----------
@@ -1043,9 +1070,14 @@
     }
 
     if (matched) {
+      const firedCount = shootPrimaryAndMaybeExtras(matched, nowMs);
+      if (firedCount < 1) {
+        setBadge("warn", "Fire rate limit: max 2 shots per second");
+        return false;
+      }
+
       state.lastLockAt = nowMs;
       matched.claimed = true;
-      shootPrimaryAndMaybeExtras(matched, nowMs);
 
       state.hits += 1;
       state.streak += 1;
@@ -1307,6 +1339,7 @@
     state.missiles = []; state.bullets = []; state.particles = []; state.explosions = []; state.gifts = [];
     state.targetId = null;
     state.lastLockAt = 0;
+    state.recentPrimaryFires = [];
     state.freezeUntil = 0; state.slowUntil = 0; state.tripleUntil = 0;
     setHeardText("");
     updateHUD();
