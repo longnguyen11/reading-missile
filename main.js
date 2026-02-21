@@ -841,11 +841,17 @@
     requestAnimationFrame(step);
   }
 
-  // ---------- Mic / Speech ----------
+    // ---------- Mic / Speech ----------
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const speechOk = !!SpeechRecognition;
   let rec = null;
   let listening = false;
+  let keepListening = false;
+  let reconnectTimer = null;
+  let reconnectAttempts = 0;
+  let manualStop = false;
+  const MAX_RECONNECT_ATTEMPTS = 8;
+  const TRANSIENT_SPEECH_ERRORS = new Set(["aborted", "network", "no-speech"]);
 
   if (!speechOk) {
     speechSupport.textContent = "Not supported";
@@ -857,7 +863,39 @@
     setBadge("warn", "Connect mic to start");
   }
 
+  function clearReconnectTimer() {
+    if (!reconnectTimer) return;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  function cleanupRecognizer() {
+    rec = null;
+    listening = false;
+    setMicUI(false);
+  }
+
+  function scheduleReconnect() {
+    if (!keepListening) return;
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      pauseForMic("Mic disconnected");
+      return;
+    }
+    clearReconnectTimer();
+    const delayMs = Math.min(2400, 200 * Math.pow(1.6, reconnectAttempts));
+    reconnectAttempts += 1;
+    setBadge("warn", "Mic reconnecting...");
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      startListening(true);
+    }, delayMs);
+  }
+
   function pauseForMic(reason) {
+    keepListening = false;
+    manualStop = false;
+    reconnectAttempts = 0;
+    clearReconnectTimer();
     state.micConnected = false;
     listening = false;
     setMicUI(false);
@@ -865,14 +903,21 @@
   }
 
   function unpauseForMic() {
+    reconnectAttempts = 0;
     state.micConnected = true;
     listening = true;
     setMicUI(true);
     resumeGame();
   }
 
-  function startListening() {
-    if (!speechOk || listening) return;
+  function startListening(isReconnect = false) {
+    if (!speechOk || listening || rec) return;
+    if (!isReconnect) {
+      keepListening = true;
+      manualStop = false;
+      reconnectAttempts = 0;
+      clearReconnectTimer();
+    }
 
     rec = new SpeechRecognition();
     rec.lang = "en-US";
@@ -894,6 +939,7 @@
 
       // fire only on final
       if (!isFinal) return;
+      reconnectAttempts = 0;
 
       const nowMs = performance.now();
       if (nowMs - state.lastLockAt < state.lockCooldownMs) return;
@@ -941,14 +987,24 @@
     };
 
     rec.onerror = (e) => {
-      try { rec && rec.stop(); } catch(_) {}
-      rec = null;
-      pauseForMic(`Mic error: ${e.error}`);
+      const err = e && e.error ? e.error : "unknown";
+      cleanupRecognizer();
+      if (keepListening && TRANSIENT_SPEECH_ERRORS.has(err)) {
+        scheduleReconnect();
+        return;
+      }
+      pauseForMic(`Mic error: ${err}`);
     };
 
     rec.onend = () => {
-      try { rec && rec.stop(); } catch(_) {}
-      rec = null;
+      const endedByUser = manualStop;
+      manualStop = false;
+      cleanupRecognizer();
+      if (endedByUser) return;
+      if (keepListening) {
+        scheduleReconnect();
+        return;
+      }
       pauseForMic("Mic disconnected");
     };
 
@@ -956,24 +1012,31 @@
       rec.start();
       unpauseForMic();
     } catch (e) {
-      rec = null;
+      cleanupRecognizer();
+      if (keepListening) {
+        scheduleReconnect();
+        return;
+      }
       pauseForMic("Could not start mic");
     }
   }
 
   function stopListening() {
+    keepListening = false;
+    manualStop = true;
+    reconnectAttempts = 0;
+    clearReconnectTimer();
     try { rec && rec.stop(); } catch(_) {}
-    rec = null;
+    cleanupRecognizer();
     pauseForMic("Mic disconnected");
   }
 
   btnMic.addEventListener("click", () => {
     if (!speechOk) return;
-    if (listening) stopListening();
+    if (listening || keepListening) stopListening();
     else startListening();
   });
-
-  btnPause.addEventListener("click", () => {
+btnPause.addEventListener("click", () => {
     if (isFrozen(performance.now())) return;
     if (state.paused) resumeGame();
     else pauseGame();
@@ -997,6 +1060,7 @@
 
   requestAnimationFrame(step);
 })();
+
 
 
 
