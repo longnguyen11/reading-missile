@@ -137,10 +137,12 @@
 
     cannonAngle: -Math.PI/2,
     cannonAngleTarget: -Math.PI/2,
-    recentPrimaryFires: [],
+    recentBulletFires: [],
   };
 
-  const MAX_PRIMARY_SHOTS_PER_SECOND = 2;
+  const MAX_BULLETS_PER_SECOND = 1;
+  const MISSILE_SPEED_SCALE = 0.7;
+  const SPAWN_INTERVAL_SCALE = 1.3;
 
   // ---------- UI helpers ----------
   function setBadge(kind, text) {
@@ -410,6 +412,44 @@
     return false;
   }
 
+  function chooseClosestSpokenWord(words, allowPartial) {
+    const candidates = Array.isArray(words)
+      ? words.map(w => normalizeEnglish(w)).filter(Boolean)
+      : [];
+    if (!candidates.length) return null;
+
+    const missiles = state.missiles.filter(m => !m.remove && !m.claimed);
+    if (!missiles.length) return candidates[0];
+
+    let bestWord = null;
+    let bestScore = Infinity;
+
+    for (const spoken of candidates) {
+      for (const m of missiles) {
+        const canMatch = isMatchEnglish(spoken, m.word, state.matchMode)
+          || (allowPartial && isLikelyPartialMatchEnglish(spoken, m.word, state.matchMode));
+        if (!canMatch) continue;
+
+        const target = normalizeEnglish(m.word);
+        if (!target) continue;
+
+        const raw = levenshtein(spoken, target);
+        const rawNorm = raw / Math.max(1, target.length);
+        const phNorm = levenshtein(phoneticish(spoken), phoneticish(target)) / Math.max(1, phoneticish(target).length);
+
+        let score = rawNorm + (state.matchMode === "fuzzy" ? phNorm * 0.35 : 0);
+        if (state.targetId && m.id === state.targetId) score -= 0.1;
+
+        if (score < bestScore) {
+          bestScore = score;
+          bestWord = spoken;
+        }
+      }
+    }
+
+    return bestWord || candidates[0];
+  }
+
   // ---------- Entities ----------
   let nextId = 1;
 
@@ -418,7 +458,7 @@
   }
   function baseSpawnInterval() {
     const base = state.spawnMode === "low" ? 1.35 : state.spawnMode === "high" ? 0.65 : 0.95;
-    return Math.max(0.30, base);
+    return Math.max(0.30 * SPAWN_INTERVAL_SCALE, base * SPAWN_INTERVAL_SCALE);
   }
 
   function spawnMissile(nowMs) {
@@ -429,7 +469,7 @@
 
     const diff = difficultyFactor();
     const slow = slowFactor(nowMs);
-    const vy = (baseFallSpeed() * state.fallMultiplier * diff * slow) + rand(-4, 10);
+    const vy = ((baseFallSpeed() * state.fallMultiplier * diff * slow) + rand(-4, 10)) * MISSILE_SPEED_SCALE;
     const vx = rand(-14, 14);
 
     state.missiles.push({ id: nextId++, word, x, y, vx, vy, r:size, wobble: rand(0, Math.PI*2), claimed:false, remove:false });
@@ -455,7 +495,7 @@
 
     const diff = difficultyFactor();
     const slow = slowFactor(nowMs);
-    const vy = (65 * state.fallMultiplier * diff * slow) + rand(0, 12);
+    const vy = ((65 * state.fallMultiplier * diff * slow) + rand(0, 12)) * MISSILE_SPEED_SCALE;
 
     state.gifts.push({ id: nextId++, type:pick.type, colorA:pick.colorA, colorB:pick.colorB, x, y, vx: rand(-8,8), vy, r:22, remove:false });
   }
@@ -505,17 +545,17 @@
     return { x:startX, y:startY, vx, vy, t:0, targetId: target.id, remove:false };
   }
 
-  function pruneRecentPrimaryFires(nowMs) {
-    state.recentPrimaryFires = state.recentPrimaryFires.filter(t => (nowMs - t) < 1000);
+  function pruneRecentBulletFires(nowMs) {
+    state.recentBulletFires = state.recentBulletFires.filter(t => (nowMs - t) < 1000);
   }
 
-  function canFirePrimaryShot(nowMs) {
-    pruneRecentPrimaryFires(nowMs);
-    return state.recentPrimaryFires.length < MAX_PRIMARY_SHOTS_PER_SECOND;
+  function canFireBullet(nowMs) {
+    pruneRecentBulletFires(nowMs);
+    return state.recentBulletFires.length < MAX_BULLETS_PER_SECOND;
   }
 
-  function recordPrimaryShot(nowMs) {
-    state.recentPrimaryFires.push(nowMs);
+  function recordBulletShot(nowMs) {
+    state.recentBulletFires.push(nowMs);
   }
 
   function pushBullet(startX, startY, target, speed) {
@@ -529,8 +569,8 @@
     const startY = state.h - 46;
     const speed = 620;
 
-    if (!canFirePrimaryShot(nowMs)) return 0;
-    recordPrimaryShot(nowMs);
+    if (!canFireBullet(nowMs)) return 0;
+    recordBulletShot(nowMs);
 
     const b0 = pushBullet(startX, startY, primaryTarget, speed);
 
@@ -542,8 +582,16 @@
       .filter(m => !m.remove && m.id !== primaryTarget.id)
       .sort((a,b) => Math.hypot(a.x-startX,a.y-startY) - Math.hypot(b.x-startX,b.y-startY));
 
-    if (others[0]) { pushBullet(startX, startY, others[0], speed); firedCount += 1; }
-    if (others[1]) { pushBullet(startX, startY, others[1], speed); firedCount += 1; }
+    if (others[0] && canFireBullet(nowMs)) {
+      recordBulletShot(nowMs);
+      pushBullet(startX, startY, others[0], speed);
+      firedCount += 1;
+    }
+    if (others[1] && canFireBullet(nowMs)) {
+      recordBulletShot(nowMs);
+      pushBullet(startX, startY, others[1], speed);
+      firedCount += 1;
+    }
     return firedCount;
   }
 
@@ -801,7 +849,7 @@
       const steps = Math.floor(state.hits / 10);
       const baseInt = baseSpawnInterval();
       const add = steps * state.difficultyStepPct;
-      const diffInterval = Math.max(0.20, baseInt * (1 - add));
+      const diffInterval = Math.max(0.20 * SPAWN_INTERVAL_SCALE, baseInt * (1 - add));
       const interval = diffInterval * spawnIntervalFactor(nowMs);
 
       state.spawnTimer += dt;
@@ -813,7 +861,7 @@
       // update missiles
       const diff = difficultyFactor();
       const slow = slowFactor(nowMs);
-      const desiredVyBase = baseFallSpeed() * state.fallMultiplier * diff * slow;
+      const desiredVyBase = (baseFallSpeed() * state.fallMultiplier * diff * slow) * MISSILE_SPEED_SCALE;
 
       for (const m of state.missiles) {
         if (m.remove) continue;
@@ -852,7 +900,7 @@
       for (const g of state.gifts) {
         if (g.remove) continue;
         const gSlow = slowFactor(nowMs);
-        g.vy = g.vy * 0.92 + (65 * state.fallMultiplier * diff * gSlow) * 0.08;
+        g.vy = g.vy * 0.92 + ((65 * state.fallMultiplier * diff * gSlow) * MISSILE_SPEED_SCALE) * 0.08;
 
         g.x += g.vx * dt;
         g.y += g.vy * dt;
@@ -1072,7 +1120,7 @@
     if (matched) {
       const firedCount = shootPrimaryAndMaybeExtras(matched, nowMs);
       if (firedCount < 1) {
-        setBadge("warn", "Fire rate limit: max 2 shots per second");
+        setBadge("warn", "Fire rate limit: max 1 bullet per second");
         return false;
       }
 
@@ -1125,10 +1173,8 @@
 
     const hearing = words[0] || options[0];
     setHeardText(hearing);
-
-    for (const word of words) {
-      if (handleRecognizedSpeech(word, isFinal, false)) return true;
-    }
+    const pickedWord = chooseClosestSpokenWord(words, !isFinal);
+    if (pickedWord && handleRecognizedSpeech(pickedWord, isFinal, false)) return true;
 
     if (isFinal) setBadge("warn", "Almost - try again!");
     return false;
@@ -1339,7 +1385,7 @@
     state.missiles = []; state.bullets = []; state.particles = []; state.explosions = []; state.gifts = [];
     state.targetId = null;
     state.lastLockAt = 0;
-    state.recentPrimaryFires = [];
+    state.recentBulletFires = [];
     state.freezeUntil = 0; state.slowUntil = 0; state.tripleUntil = 0;
     setHeardText("");
     updateHUD();
