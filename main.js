@@ -107,6 +107,7 @@
     hits: 0,
     misses: 0,
     streak: 0,
+    giftCombo: 0,
     lives: 5,
 
     missiles: [],
@@ -134,15 +135,15 @@
     freezeUntil: 0,
     slowUntil: 0,
     tripleUntil: 0,
+    berserkUntil: 0,
 
     cannonAngle: -Math.PI/2,
     cannonAngleTarget: -Math.PI/2,
-    recentBulletFires: [],
+    nextBulletAllowedAt: 0,
   };
 
-  const MAX_BULLETS_PER_SECOND = 1;
-  const MISSILE_SPEED_SCALE = 0.7;
-  const SPAWN_INTERVAL_SCALE = 1.3;
+  const BULLET_FIRE_COOLDOWN_MS = 1000;
+  const GIFT_COMBO_REQUIRED = 20;
 
   // ---------- UI helpers ----------
   function setBadge(kind, text) {
@@ -292,6 +293,10 @@
   function slowFactor(nowMs) { return nowMs < state.slowUntil ? 0.7 : 1.0; }
   function spawnIntervalFactor(nowMs) { return nowMs < state.slowUntil ? (1/0.7) : 1.0; }
   function tripleActive(nowMs) { return nowMs < state.tripleUntil; }
+  function berserkActive(nowMs) { return nowMs < state.berserkUntil; }
+  function giftDropPending() { return state.gifts.some(g => !g.remove); }
+  function giftEffectActive(nowMs) { return tripleActive(nowMs) || isFrozen(nowMs) || berserkActive(nowMs); }
+  function canDropGift(nowMs) { return !giftDropPending() && !giftEffectActive(nowMs); }
 
   // ---------- Matching ----------
   function normalizeEnglish(s) {
@@ -458,7 +463,7 @@
   }
   function baseSpawnInterval() {
     const base = state.spawnMode === "low" ? 1.35 : state.spawnMode === "high" ? 0.65 : 0.95;
-    return Math.max(0.30 * SPAWN_INTERVAL_SCALE, base * SPAWN_INTERVAL_SCALE);
+    return Math.max(0.30, base);
   }
 
   function spawnMissile(nowMs) {
@@ -469,7 +474,7 @@
 
     const diff = difficultyFactor();
     const slow = slowFactor(nowMs);
-    const vy = ((baseFallSpeed() * state.fallMultiplier * diff * slow) + rand(-4, 10)) * MISSILE_SPEED_SCALE;
+    const vy = (baseFallSpeed() * state.fallMultiplier * diff * slow) + rand(-4, 10);
     const vx = rand(-14, 14);
 
     state.missiles.push({ id: nextId++, word, x, y, vx, vy, r:size, wobble: rand(0, Math.PI*2), claimed:false, remove:false });
@@ -486,26 +491,41 @@
   }
 
   function spawnGift(nowMs) {
+    if (!canDropGift(nowMs)) return false;
+
     const x = rand(40, state.w - 40);
     const y = -40;
     const gifts = [
       { type:"triple", colorA:"rgba(251,191,36,0.95)", colorB:"rgba(255,255,255,0.92)" },
+      { type:"freeze", colorA:"rgba(56,189,248,0.95)", colorB:"rgba(224,242,254,0.95)" },
+      { type:"berserk", colorA:"rgba(239,68,68,0.95)", colorB:"rgba(254,226,226,0.95)" },
     ];
     const pick = gifts[Math.floor(Math.random() * gifts.length)];
 
     const diff = difficultyFactor();
     const slow = slowFactor(nowMs);
-    const vy = ((65 * state.fallMultiplier * diff * slow) + rand(0, 12)) * MISSILE_SPEED_SCALE;
+    const vy = (65 * state.fallMultiplier * diff * slow) + rand(0, 12);
 
     state.gifts.push({ id: nextId++, type:pick.type, colorA:pick.colorA, colorB:pick.colorB, x, y, vx: rand(-8,8), vy, r:22, remove:false });
+    return true;
   }
 
   function activateGift(g, nowMs) {
     if (!g || g.remove) return;
     g.remove = true;
     if (g.type === "triple") {
-      state.tripleUntil = Math.max(state.tripleUntil, nowMs + 30000);
-      setBadge("good", "Triple shot! 30s");
+      state.tripleUntil = Math.max(state.tripleUntil, nowMs + 7000);
+      setBadge("good", "Triple shot! 7s");
+      return;
+    }
+    if (g.type === "freeze") {
+      state.freezeUntil = Math.max(state.freezeUntil, nowMs + 2000);
+      setBadge("good", "Freeze! 2s");
+      return;
+    }
+    if (g.type === "berserk") {
+      state.berserkUntil = Math.max(state.berserkUntil, nowMs + 10000);
+      setBadge("good", "Berserk click mode! 10s");
     }
   }
 
@@ -545,17 +565,12 @@
     return { x:startX, y:startY, vx, vy, t:0, targetId: target.id, remove:false };
   }
 
-  function pruneRecentBulletFires(nowMs) {
-    state.recentBulletFires = state.recentBulletFires.filter(t => (nowMs - t) < 1000);
-  }
-
   function canFireBullet(nowMs) {
-    pruneRecentBulletFires(nowMs);
-    return state.recentBulletFires.length < MAX_BULLETS_PER_SECOND;
+    return nowMs >= state.nextBulletAllowedAt;
   }
 
   function recordBulletShot(nowMs) {
-    state.recentBulletFires.push(nowMs);
+    state.nextBulletAllowedAt = nowMs + BULLET_FIRE_COOLDOWN_MS;
   }
 
   function pushBullet(startX, startY, target, speed) {
@@ -616,16 +631,27 @@
   }
 
   canvas.addEventListener("pointerdown", (e) => {
+    const nowMs = performance.now();
     const pt = screenToWorld(e.clientX, e.clientY);
 
     // ignore clicks outside world (letterbox area)
     if (pt.x < 0 || pt.x > state.w || pt.y < 0 || pt.y > state.h) return;
 
     const g = pickGiftAt(pt.x, pt.y);
-    if (g) { activateGift(g, performance.now()); return; }
+    if (g) { activateGift(g, nowMs); return; }
 
     const m = pickMissileAt(pt.x, pt.y);
     if (m) {
+      if (berserkActive(nowMs)) {
+        m.remove = true;
+        if (state.targetId === m.id) state.targetId = null;
+        state.score += 4;
+        spawnExplosion(m.x, m.y, 7);
+        spawnImpactParticles(m.x, m.y);
+        setBadge("good", `Berserk hit ${m.word}`);
+        updateHUD();
+        return;
+      }
       state.targetId = m.id;
       setBadge("warn", `Target set: ${m.word}`);
     }
@@ -659,6 +685,13 @@
     ctx.ellipse(x - 7, y - h/2 - 2, 7, 5, -0.4, 0, Math.PI * 2);
     ctx.ellipse(x + 7, y - h/2 - 2, 7, 5, 0.4, 0, Math.PI * 2);
     ctx.fill();
+
+    const label = g.type === "triple" ? "3X" : g.type === "freeze" ? "FR" : "BK";
+    ctx.fillStyle = "rgba(15,23,42,0.92)";
+    ctx.font = "700 11px system-ui";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, x, y + 1);
   }
 
   function render(nowMs) {
@@ -673,6 +706,22 @@
 
     // World transform
     ctx.setTransform(view.dpr * view.scale, 0, 0, view.dpr * view.scale, view.dpr * view.offX, view.dpr * view.offY);
+
+    const berserk = berserkActive(nowMs);
+    ctx.save();
+    if (berserk) {
+      const pulse = 0.5 + 0.5 * Math.sin(nowMs * 0.014);
+      const alpha = 0.45 + 0.35 * pulse;
+      ctx.strokeStyle = `rgba(248,113,113,${alpha.toFixed(3)})`;
+      ctx.shadowColor = "rgba(248,113,113,0.75)";
+      ctx.shadowBlur = 14;
+      ctx.lineWidth = 4;
+    } else {
+      ctx.strokeStyle = "rgba(255,255,255,0.14)";
+      ctx.lineWidth = 2;
+    }
+    ctx.strokeRect(1.5, 1.5, state.w - 3, state.h - 3);
+    ctx.restore();
 
     // stars (world)
     ctx.save();
@@ -812,9 +861,8 @@
       ctx.restore();
     }
 
-    // paused/frozen overlay in WORLD coordinates
-    const frozen = isFrozen(nowMs);
-    if (state.paused || frozen) {
+    // paused overlay in WORLD coordinates
+    if (state.paused) {
       ctx.save();
       ctx.fillStyle = "rgba(0,0,0,0.50)";
       ctx.fillRect(0, 0, state.w, state.h);
@@ -823,12 +871,12 @@
       ctx.font = "700 22px system-ui";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      const msg = frozen ? "Frozen!" : (state.micConnected ? "Paused" : "Connect mic to start");
+      const msg = state.micConnected ? "Paused" : "Connect mic to start";
       ctx.fillText(msg, state.w/2, state.h/2 - 8);
 
       ctx.fillStyle = "rgba(255,255,255,0.75)";
       ctx.font = "14px system-ui";
-      const sub = frozen ? "Hang tight..." : (state.micConnected ? "Use the Settings button anytime" : "Open Settings to connect mic");
+      const sub = state.micConnected ? "Use the Settings button anytime" : "Open Settings to connect mic";
       ctx.fillText(sub, state.w/2, state.h/2 + 18);
       ctx.restore();
     }
@@ -842,56 +890,60 @@
     // smooth rotate cannon
     state.cannonAngle = angleLerp(state.cannonAngle, state.cannonAngleTarget, 1 - Math.pow(0.001, dt));
 
-    const frozen = isFrozen(nowMs);
-
-    if (!state.paused && !frozen) {
+    if (!state.paused) {
+      const frozen = isFrozen(nowMs);
       // spawn ramp
       const steps = Math.floor(state.hits / 10);
       const baseInt = baseSpawnInterval();
       const add = steps * state.difficultyStepPct;
-      const diffInterval = Math.max(0.20 * SPAWN_INTERVAL_SCALE, baseInt * (1 - add));
+      const diffInterval = Math.max(0.20, baseInt * (1 - add));
       const interval = diffInterval * spawnIntervalFactor(nowMs);
 
-      state.spawnTimer += dt;
-      while (state.spawnTimer >= interval) {
-        state.spawnTimer -= interval;
-        spawnMissile(nowMs);
+      if (!frozen) {
+        state.spawnTimer += dt;
+        while (state.spawnTimer >= interval) {
+          state.spawnTimer -= interval;
+          spawnMissile(nowMs);
+        }
       }
 
       // update missiles
       const diff = difficultyFactor();
       const slow = slowFactor(nowMs);
-      const desiredVyBase = (baseFallSpeed() * state.fallMultiplier * diff * slow) * MISSILE_SPEED_SCALE;
+      const desiredVyBase = baseFallSpeed() * state.fallMultiplier * diff * slow;
 
-      for (const m of state.missiles) {
-        if (m.remove) continue;
-        m.vy = m.vy * 0.92 + desiredVyBase * 0.08;
+      if (!frozen) {
+        for (const m of state.missiles) {
+          if (m.remove) continue;
+          m.vy = m.vy * 0.92 + desiredVyBase * 0.08;
 
-        m.wobble += dt * 2.2;
-        m.x += m.vx * dt + Math.sin(m.wobble) * 6 * dt;
-        m.y += m.vy * dt;
+          m.wobble += dt * 2.2;
+          m.x += m.vx * dt + Math.sin(m.wobble) * 6 * dt;
+          m.y += m.vy * dt;
 
-        if (m.x < 28) { m.x = 28; m.vx = Math.abs(m.vx); }
-        if (m.x > state.w - 28) { m.x = state.w - 28; m.vx = -Math.abs(m.vx); }
+          if (m.x < 28) { m.x = 28; m.vx = Math.abs(m.vx); }
+          if (m.x > state.w - 28) { m.x = state.w - 28; m.vx = -Math.abs(m.vx); }
 
-        if (m.y > state.h - 60) {
-          if (!m.claimed) {
-            m.remove = true;
-            state.misses += 1;
-            state.lives = Math.max(0, state.lives - 1);
-            state.streak = 0;
-            state.score = Math.max(0, state.score - 3);
-            setBadge("bad", `Missed ${m.word} - ${state.lives} lives left`);
-            spawnExplosion(m.x, state.h - 64, 8);
-            spawnImpactParticles(m.x, state.h - 64);
-            updateHUD();
-            if (state.lives === 0) {
-              pauseGame("Game over - no lives left");
+          if (m.y > state.h - 60) {
+            if (!m.claimed) {
+              m.remove = true;
+              state.misses += 1;
+              state.lives = Math.max(0, state.lives - 1);
+              state.streak = 0;
+              state.giftCombo = 0;
+              state.score = Math.max(0, state.score - 3);
+              setBadge("bad", `Missed ${m.word} - ${state.lives} lives left`);
+              spawnExplosion(m.x, state.h - 64, 8);
+              spawnImpactParticles(m.x, state.h - 64);
+              updateHUD();
+              if (state.lives === 0) {
+                pauseGame("Game over - no lives left");
+              }
+            } else {
+              m.remove = true;
+              spawnExplosion(m.x, state.h - 64, 8);
+              spawnImpactParticles(m.x, state.h - 64);
             }
-          } else {
-            m.remove = true;
-            spawnExplosion(m.x, state.h - 64, 8);
-            spawnImpactParticles(m.x, state.h - 64);
           }
         }
       }
@@ -900,7 +952,7 @@
       for (const g of state.gifts) {
         if (g.remove) continue;
         const gSlow = slowFactor(nowMs);
-        g.vy = g.vy * 0.92 + ((65 * state.fallMultiplier * diff * gSlow) * MISSILE_SPEED_SCALE) * 0.08;
+        g.vy = g.vy * 0.92 + (65 * state.fallMultiplier * diff * gSlow) * 0.08;
 
         g.x += g.vx * dt;
         g.y += g.vy * dt;
@@ -1131,12 +1183,15 @@
       state.streak += 1;
       state.score += 10 + Math.min(20, state.streak);
 
-      if (state.streak > 0 && state.streak % 7 === 0) {
-        spawnGift(nowMs);
-        setBadge("good", "Gift dropped!");
-      } else {
-        setBadge("good", `Locked ${matched.word}`);
+      let droppedGift = false;
+      if (canDropGift(nowMs)) {
+        state.giftCombo += 1;
+        if (state.giftCombo >= GIFT_COMBO_REQUIRED) {
+          droppedGift = spawnGift(nowMs);
+          if (droppedGift) state.giftCombo = 0;
+        }
       }
+      setBadge("good", droppedGift ? "Gift dropped!" : `Locked ${matched.word}`);
 
       state.targetId = null;
       updateHUD();
@@ -1375,18 +1430,17 @@
   });
 
   btnPause.addEventListener("click", () => {
-    if (isFrozen(performance.now())) return;
     if (state.paused) resumeGame();
     else pauseGame();
   });
 
   btnReset.addEventListener("click", () => {
-    state.score = 0; state.hits = 0; state.misses = 0; state.streak = 0; state.lives = 5;
+    state.score = 0; state.hits = 0; state.misses = 0; state.streak = 0; state.giftCombo = 0; state.lives = 5;
     state.missiles = []; state.bullets = []; state.particles = []; state.explosions = []; state.gifts = [];
     state.targetId = null;
     state.lastLockAt = 0;
-    state.recentBulletFires = [];
-    state.freezeUntil = 0; state.slowUntil = 0; state.tripleUntil = 0;
+    state.nextBulletAllowedAt = 0;
+    state.freezeUntil = 0; state.slowUntil = 0; state.tripleUntil = 0; state.berserkUntil = 0;
     setHeardText("");
     updateHUD();
     setBadge("warn", state.micConnected ? "Listening... say a word" : "Connect mic to start");
