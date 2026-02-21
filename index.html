@@ -1,0 +1,102 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Reading Missile Defense</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+
+  <!-- Collapsed control: ONLY this stays on screen -->
+  <button id="cogBtn" aria-label="Open settings">Settings</button>
+
+  <!-- Floating panel (opens on start, then collapses to cog) -->
+  <div id="panelOverlay">
+    <div id="panel">
+      <div class="row">
+        <div class="title">Reading Missile Defense <span class="pill" id="micPill">Mic: off</span></div>
+        <button class="btn" id="closePanel">Close</button>
+      </div>
+
+      <div class="row" style="margin-top:12px;">
+        <button class="btn primary" id="btnMic">Connect Mic</button>
+        <button class="btn" id="btnPause">Pause</button>
+        <button class="btn danger" id="btnReset">Reset</button>
+      </div>
+
+      <div class="stats">
+        <div class="stat">Score: <b id="score">0</b></div>
+        <div class="stat">Hits: <b id="hits">0</b></div>
+        <div class="stat">Misses: <b id="misses">0</b></div>
+        <div class="stat">Streak: <b id="streak">0</b></div>
+        <div class="stat">Level: <b id="level">1</b></div>
+        <div class="stat">Heard: <b id="heard">...</b></div>
+      </div>
+
+      <div class="statusLine">
+        <div id="matchText">Connect mic to start</div>
+        <div class="badge warn" id="matchBadge">Waiting</div>
+      </div>
+
+      <div class="label">Words list (cookie-saved)</div>
+      <textarea id="wordsBox" placeholder="cat&#10;dog&#10;apple&#10;banana"></textarea>
+
+      <div class="grid2">
+        <div>
+          <div class="label">Matching</div>
+          <select id="matchSel" class="select">
+            <option value="strict">Strict (exact-ish)</option>
+            <option value="fuzzy" selected>Fuzzy (kid-friendly)</option>
+          </select>
+        </div>
+        <div>
+          <div class="label">Spawn density</div>
+          <select id="spawnSel" class="select">
+            <option value="low" selected>Low</option>
+            <option value="med">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div>
+          <div class="label">Game speed</div>
+          <select id="speedSel" class="select">
+            <option value="chill" selected>Chill</option>
+            <option value="normal">Normal</option>
+            <option value="fast">Fast</option>
+          </select>
+        </div>
+        <div>
+          <div class="label">Mic cooldown</div>
+          <select id="cooldownSel" class="select">
+            <option value="10" selected>10ms</option>
+            <option value="100">100ms</option>
+            <option value="300">300ms</option>
+            <option value="600">600ms</option>
+            <option value="900">900ms</option>
+            <option value="1200">1200ms</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px;">
+        <button class="btn" id="saveSettings">Save</button>
+        <div class="badge" id="cookieStatus">Cookie: ...</div>
+      </div>
+
+      <div class="statusLine">
+        <div>Speech API: <b id="speechSupport">checking...</b></div>
+        <div>Tip: Tap the falling gift to activate (or let it hit bottom).</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="main.js"></script>
+</body>
+</html>
